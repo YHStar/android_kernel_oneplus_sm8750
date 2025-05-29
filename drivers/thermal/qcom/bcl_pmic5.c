@@ -23,6 +23,14 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/ipc_logging.h>
 #include "thermal_zone_internal.h"
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#include <linux/power_supply.h>
+#include <linux/proc_fs.h>
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+#include <linux/rtc.h>
+#include <linux/time.h>
+#endif
 
 #define BCL_DRIVER_NAME       "bcl_pmic5"
 #define BCL_MONITOR_EN        0x46
@@ -179,12 +187,47 @@ struct bcl_device {
 	bool				no_bit_shift;
 	uint32_t			ibat_ext_range_factor;
 	struct bcl_peripheral_data	param[BCL_TYPE_MAX];
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bool				support_track;
+	int				id;
+#endif
 	const struct bcl_desc		*desc;
 	struct notifier_block		nb;
 };
 
 static struct bcl_device *bcl_devices[MAX_PERPH_COUNT];
 static int bcl_device_ct;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+static int BCL_LEVEL0_COUNT;
+static int BCL_LEVEL1_COUNT;
+static int BCL_LEVEL2_COUNT;
+struct proc_dir_entry *oplus_bcl_stat;
+
+struct timeval {
+	long tv_sec;
+	long tv_usec;
+};
+
+static ssize_t bcl_count_show(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[256];
+	size_t len = 0;
+
+	len = sprintf(buffer, "%d  %d  %d\n",BCL_LEVEL0_COUNT,BCL_LEVEL1_COUNT,BCL_LEVEL2_COUNT);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static void do_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 now;
+
+	ktime_get_real_ts64(&now);
+	tv->tv_sec = now.tv_sec;
+	tv->tv_usec = now.tv_nsec/1000;
+}
+#endif
+
 static BLOCKING_NOTIFIER_HEAD(bcl_pmic5_notifier);
 
 void bcl_pmic5_notifier_register(struct notifier_block *n)
@@ -684,10 +727,66 @@ static irqreturn_t bcl_handle_irq(int irq, void *data)
 	int ibat = 0, vbat = 0;
 	struct bcl_device *bcl_perph;
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	struct timeval tv;
+	static struct power_supply *batt_psy;
+	union power_supply_propval psy = {0,};
+	int err = 0;
+	int vol = 0,curr = 0;
+	int level = -1,id = -1;
+	long time_s = 0;
+#endif
+
 	if (!perph_data->tz_dev)
 		return IRQ_HANDLED;
 	bcl_perph = perph_data->dev;
 	bcl_read_register(bcl_perph, BCL_IRQ_STATUS, &irq_status);
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if (bcl_perph->support_track) {
+		if (BCL_LEVEL0_COUNT == INT_MAX)
+			BCL_LEVEL0_COUNT = 0;
+		if (BCL_LEVEL1_COUNT == INT_MAX)
+			BCL_LEVEL1_COUNT = 0;
+		if (BCL_LEVEL2_COUNT == INT_MAX)
+			BCL_LEVEL2_COUNT = 0;
+		if (irq_status & 0x04) {
+			level = 2;
+			BCL_LEVEL2_COUNT++;
+		} else if (irq_status & 0x02) {
+			level = 1;
+			BCL_LEVEL1_COUNT++;
+		} else if (irq_status & 0x01) {
+			level = 0;
+			BCL_LEVEL0_COUNT++;
+		}
+		do_gettimeofday(&tv);
+		time_s = tv.tv_sec;
+		id = bcl_perph->id;
+		if (!batt_psy)
+			batt_psy = power_supply_get_by_name("battery");
+		if (batt_psy) {
+			err = power_supply_get_property(batt_psy,
+				POWER_SUPPLY_PROP_VOLTAGE_NOW, &psy);
+			if (err) {
+				pr_err("can't get battery voltage:%d\n",err);
+			} else {
+				vol = psy.intval / 1000;
+			}
+
+			err = power_supply_get_property(batt_psy,
+				POWER_SUPPLY_PROP_CURRENT_NOW, &psy);
+			if (err) {
+				pr_err("can't get battery current:%d\n",err);
+			} else {
+				curr = psy.intval;
+			}
+		}
+		trace_bcl_stat(time_s, id, level, vol, curr);
+
+	}
+#endif
+
 	if (bcl_perph->param[BCL_IBAT_LVL0].tz_dev)
 		bcl_read_ibat(bcl_perph->param[BCL_IBAT_LVL0].tz_dev, &ibat);
 	else if (bcl_perph->param[BCL_2S_IBAT_LVL0].tz_dev)
@@ -710,6 +809,12 @@ static irqreturn_t bcl_handle_irq(int irq, void *data)
 
 	return IRQ_HANDLED;
 }
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+static const struct proc_ops proc_bcl_count = {
+	.proc_read		= bcl_count_show,
+};
+#endif
 
 static int bcl_get_ibat_ext_range_factor(struct platform_device *pdev,
 		uint32_t *ibat_range_factor)
@@ -786,6 +891,11 @@ static int bcl_get_devicetree_data(struct platform_device *pdev,
 
 	ret = bcl_get_ibat_ext_range_factor(pdev,
 					&bcl_perph->ibat_ext_range_factor);
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bcl_perph->support_track =  of_property_read_bool(dev_node,"bcl,support_track");
+	pr_err("bcl support_track:%d, id:%d\n", bcl_perph->support_track, bcl_perph->id);
+#endif
 
 	if (of_property_read_bool(dev_node, "qcom,bcl-mon-vbat-only"))
 		bcl_perph->bcl_monitor_type = BCL_MON_VBAT_ONLY;
@@ -1071,6 +1181,9 @@ static int bcl_probe(struct platform_device *pdev)
 	struct bcl_device *bcl_perph = NULL;
 	char bcl_name[40];
 	int err = 0;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	struct proc_dir_entry *proc_node;
+#endif
 
 	if (bcl_device_ct >= MAX_PERPH_COUNT) {
 		dev_err(&pdev->dev, "Max bcl peripheral supported already.\n");
@@ -1082,6 +1195,10 @@ static int bcl_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	bcl_perph = bcl_devices[bcl_device_ct];
 	bcl_perph->dev = &pdev->dev;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bcl_perph->id = bcl_device_ct;
+#endif
 
 	bcl_perph->desc = of_device_get_match_data(&pdev->dev);
 	if (!bcl_perph->desc)
@@ -1104,6 +1221,14 @@ static int bcl_probe(struct platform_device *pdev)
 		bcl_device_ct--;
 		return err;
 	}
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	oplus_bcl_stat = proc_mkdir("bcl_stat", NULL);
+	if (oplus_bcl_stat)
+		proc_node = proc_create("bcl_count", 0664, oplus_bcl_stat, &proc_bcl_count);
+	else
+		dev_err(&pdev->dev, "Couldn't creat oplus bcl_stat\n");
+#endif
 
 	switch (bcl_perph->bcl_monitor_type) {
 	case BCL_MON_DEFAULT:
