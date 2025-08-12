@@ -59,7 +59,7 @@ static struct workqueue_struct *crash_report_workqueue = NULL;
 
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
 //Add for customized subsystem ramdump to skip generate dump cause by SAU
-#define MAX_SSR_REASON_LEN	256U
+#define MAX_MODEM_SSR_REASON_LEN   256U
 #define MAX_SSR_DEFAULT_REASON_LEN 16
 #define REMOTEPROC_MSS "remoteproc-mss"
 extern bool SKIP_GENERATE_RAMDUMP;
@@ -284,7 +284,7 @@ static void qcom_q6v5_crash_handler_work(struct work_struct *work)
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
 	size_t len = 0;
 	char *msg = NULL;
-	char reason[MAX_SSR_REASON_LEN];
+	char reason[MAX_MODEM_SSR_REASON_LEN];
 	const char *defaultMsg = "Unknown reason!";
 #endif /* OPLUS_FEATURE_MODEM_MINIDUMP */
 
@@ -314,7 +314,7 @@ static void qcom_q6v5_crash_handler_work(struct work_struct *work)
 		msg = qcom_smem_get(QCOM_SMEM_HOST_ANY, q6v5->crash_reason, &len);
 		if (msg != NULL) {
 			memset(reason, 0, sizeof(reason));
-			strlcpy(reason, msg, min(len, (size_t)MAX_SSR_REASON_LEN));
+			strlcpy(reason, msg, min(len, (size_t)(MAX_MODEM_SSR_REASON_LEN -1)));
 			dev_err(q6v5->dev, "remoteproc crashed reason: %s\n", reason);
 		} else {
 			dev_err(q6v5->dev, "Can not get crash reason from smem");
@@ -337,7 +337,7 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 	size_t len;
 	char *msg;
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
-	char reason[MAX_SSR_REASON_LEN];
+	char reason[MAX_MODEM_SSR_REASON_LEN];
 	const char *name =	q6v5->rproc->name;
 #endif
 
@@ -389,7 +389,7 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
 	if (!IS_ERR(msg) && len > 0 && msg[0]) {
-		strlcpy(reason, msg, min(len, (size_t)MAX_SSR_REASON_LEN));
+		strlcpy(reason, msg, min(len, (size_t)(MAX_MODEM_SSR_REASON_LEN -1)));
 		dev_err(q6v5->dev, "%s subsystem failure reason: %s.\n", name, reason);
 		//Add for customized subsystem ramdump to skip generate dump cause by SAU
 		if (strstr(name, REMOTEPROC_MSS)) {
@@ -440,7 +440,7 @@ static irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
 	char *msg;
 
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
-	char reason[MAX_SSR_REASON_LEN];
+	char reason[MAX_MODEM_SSR_REASON_LEN];
 	const char *name =	q6v5->rproc->name;
 #endif
 
@@ -489,7 +489,7 @@ static irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
 
 #ifdef OPLUS_FEATURE_MODEM_MINIDUMP
 	if (!IS_ERR(msg) && len > 0 && msg[0]) {
-		strlcpy(reason, msg, min(len, (size_t)MAX_SSR_REASON_LEN));
+		strlcpy(reason, msg, min(len, (size_t)(MAX_MODEM_SSR_REASON_LEN -1)));
 		dev_err(q6v5->dev, "%s subsystem failure reason: %s.\n", name, reason);
 		//Add for customized subsystem ramdump to skip generate dump cause by SAU
 		if (strstr(name, REMOTEPROC_MSS)) {

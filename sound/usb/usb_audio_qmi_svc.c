@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -92,7 +92,6 @@ struct uaudio_dev {
 	unsigned int card_num;
 	unsigned int usb_core_id;
 	atomic_t in_use;
-	struct kref kref;
 	wait_queue_head_t disconnect_wq;
 
 	/* xhci sideband */
@@ -514,6 +513,7 @@ static int prepare_qmi_response(struct snd_usb_substream *subs,
 	struct sg_table xfer_buf_sgt;
 	struct page *pg;
 	bool dma_coherent;
+	struct snd_usb_audio *chip;
 
 	iface = usb_ifnum_to_if(subs->dev, subs->cur_audiofmt->iface);
 	if (!iface) {
@@ -824,8 +824,9 @@ skip_sync:
 
 	sg_free_table(&xfer_buf_sgt);
 
-	if (!atomic_read(&uadev[card_num].in_use)) {
-		kref_init(&uadev[card_num].kref);
+	chip = uadev[card_num].chip;
+
+	if (atomic_read(&uadev[card_num].in_use) == 1) {
 		init_waitqueue_head(&uadev[card_num].disconnect_wq);
 		uadev[card_num].num_intf =
 			subs->dev->config->desc.bNumInterfaces;
@@ -835,10 +836,9 @@ skip_sync:
 			ret = -ENOMEM;
 			goto unmap_sync;
 		}
+		mutex_lock(&chip->mutex);
 		uadev[card_num].udev = subs->dev;
-		atomic_set(&uadev[card_num].in_use, 1);
-	} else {
-		kref_get(&uadev[card_num].kref);
+		mutex_unlock(&chip->mutex);
 	}
 
 	uadev[card_num].card_num = card_num;
@@ -915,6 +915,11 @@ static void uaudio_dev_intf_cleanup(struct usb_device *udev,
 	info->xfer_buf_pa = 0;
 
 	info->in_use = false;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC /* CR#4006716 */
+	uaudio_dbg("release resources: intf# %d card# %d\n",
+			info->intf_num, info->pcm_card_num);
+#endif
 }
 
 static void uaudio_event_ring_cleanup_free(struct uaudio_dev *dev)
@@ -943,8 +948,10 @@ static void uaudio_dev_cleanup(struct uaudio_dev *dev)
 		if (!dev->info[if_idx].in_use)
 			continue;
 		uaudio_dev_intf_cleanup(dev->udev, &dev->info[if_idx]);
+#ifndef OPLUS_FEATURE_CHG_BASIC /* CR#4006716 */
 		uaudio_dbg("release resources: intf# %d card# %d\n",
 				dev->info[if_idx].intf_num, dev->card_num);
+#endif
 	}
 
 	dev->num_intf = 0;
@@ -1043,15 +1050,13 @@ done:
 	if (dev->sb)
 		xhci_sideband_unregister(dev->sb);
 
-	mutex_unlock(&chip->mutex);
 	uadev[card_num].chip = NULL;
 	uadev[card_num].sb = NULL;
+	mutex_unlock(&chip->mutex);
 }
 
-static void uaudio_dev_release(struct kref *kref)
+static void uaudio_dev_release(struct uaudio_dev *dev)
 {
-	struct uaudio_dev *dev = container_of(kref, struct uaudio_dev, kref);
-
 	uaudio_dbg("for dev %pK\n", dev);
 
 	uaudio_event_ring_cleanup_free(dev);
@@ -1369,7 +1374,7 @@ static void handle_uaudio_stream_req(struct qmi_handle *handle,
 
 	if (!subs) {
 		uaudio_err("invalid substream\n");
-		ret = -EINVAL;
+		ret = -EFAULT;
 		goto response;
 	}
 
@@ -1420,6 +1425,10 @@ static void handle_uaudio_stream_req(struct qmi_handle *handle,
 	uadev[pcm_card_num].ctrl_intf = chip->ctrl_intf;
 
 	if (req_msg->enable) {
+		mutex_lock(&chip->mutex);
+		atomic_inc(&uadev[pcm_card_num].in_use);
+		mutex_unlock(&chip->mutex);
+
 		ret = enable_audio_stream(subs,
 				map_pcm_format(req_msg->audio_format),
 				req_msg->number_of_ch, req_msg->bit_rate,
@@ -1427,6 +1436,16 @@ static void handle_uaudio_stream_req(struct qmi_handle *handle,
 		if (!ret)
 			ret = prepare_qmi_response(subs, req_msg, &resp,
 					info_idx);
+		else
+			uaudio_dbg("enable_audio_stream failed %d\n", ret);
+
+		if (ret) {
+			mutex_lock(&chip->mutex);
+			uaudio_dbg("enable process failed %d\n", ret);
+			atomic_dec(&uadev[pcm_card_num].in_use);
+			mutex_unlock(&chip->mutex);
+		}
+
 	} else {
 		info = &uadev[pcm_card_num].info[info_idx];
 		if (info->data_ep_pipe) {
@@ -1464,12 +1483,13 @@ response:
 			uaudio_dev_intf_cleanup(
 					uadev[pcm_card_num].udev,
 					info);
+#ifndef OPLUS_FEATURE_CHG_BASIC /* CR#4006716 */
 			uaudio_dbg("release resources: intf# %d card# %d\n",
 					info->intf_num, pcm_card_num);
+#endif
 		}
-		if (atomic_read(&uadev[pcm_card_num].in_use))
-			kref_put(&uadev[pcm_card_num].kref,
-					uaudio_dev_release);
+		if (atomic_dec_and_test(&uadev[pcm_card_num].in_use))
+			uaudio_dev_release(&uadev[pcm_card_num]);
 		mutex_unlock(&chip->mutex);
 	}
 
