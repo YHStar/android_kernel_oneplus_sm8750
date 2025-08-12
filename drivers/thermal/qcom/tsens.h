@@ -584,6 +584,9 @@ struct tsens_features {
 	unsigned int persist_max_min:1;
 	int trip_min_temp;
 	int trip_max_temp;
+	int valid_bit;
+	int last_temp_mask;
+	u32 last_temp_sign_bit;
 };
 
 /**
