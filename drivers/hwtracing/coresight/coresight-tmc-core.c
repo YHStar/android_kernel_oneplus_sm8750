@@ -523,39 +523,6 @@ static ssize_t stop_on_flush_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(stop_on_flush);
 
-static ssize_t mgmt_ctl_show(struct device *dev,
-			struct device_attribute *attr, char *buf)
-{
-	u32 val;
-	struct tmc_drvdata *drvdata = dev_get_drvdata(dev->parent);
-	struct coresight_device *csdev = drvdata->csdev;
-
-	pm_runtime_resume_and_get(csdev->dev.parent);
-	val = csdev_access_relaxed_read32(&csdev->access, 0x20);
-	pm_runtime_put_sync(csdev->dev.parent);
-	return scnprintf(buf, PAGE_SIZE, "%x\n", val);
-}
-
-static ssize_t mgmt_ctl_store(struct device *dev,
-			struct device_attribute *attr,
-			const char *buf, size_t size)
-{
-	unsigned long val;
-	struct tmc_drvdata *drvdata = dev_get_drvdata(dev->parent);
-	struct coresight_device *csdev = drvdata->csdev;
-
-	if ((kstrtoul(buf, 0, &val)) || (val & ~1UL))
-		return -EINVAL;
-
-	pm_runtime_resume_and_get(csdev->dev.parent);
-	csdev_access_relaxed_write32(&csdev->access, (u32)val, 0x20);
-	pm_runtime_put_sync(csdev->dev.parent);
-
-	return size;
-}
-
-static DEVICE_ATTR_RW(mgmt_ctl);
-
 static struct attribute *coresight_tmc_etr_attrs[] = {
 	&dev_attr_trigger_cntr.attr,
 	&dev_attr_buffer_size.attr,
@@ -568,7 +535,6 @@ static struct attribute *coresight_tmc_etr_attrs[] = {
 static struct attribute *coresight_tmc_etf_attrs[] = {
 	&dev_attr_trigger_cntr.attr,
 	&dev_attr_stop_on_flush.attr,
-	&dev_attr_mgmt_ctl.attr,
 	NULL,
 };
 
@@ -704,9 +670,10 @@ static int tmc_add_coresight_dev(struct amba_device *adev, const struct amba_id 
 	drvdata->atclk = devm_clk_get(dev, "atclk"); /* optional */
 	if (IS_ERR(drvdata->atclk) &&
 			of_property_read_bool(dev->of_node, "qcom,atclk-dependence")) {
-		dev_err(dev, "atclk is NULL\n");
-		return -EPROBE_DEFER;
+		dev_err(dev, "get atclk fail %ld\n",  PTR_ERR(drvdata->atclk));
+		return  PTR_ERR(drvdata->atclk);
 	}
+
 	if (!IS_ERR(drvdata->atclk)) {
 		ret = clk_prepare_enable(drvdata->atclk);
 		if (ret)
@@ -809,10 +776,6 @@ static int tmc_add_coresight_dev(struct amba_device *adev, const struct amba_id 
 	if (IS_ERR(drvdata->csdev)) {
 		ret = PTR_ERR(drvdata->csdev);
 		goto out_disable_clk;
-	}
-
-	if (!strcmp(desc.name, "coresight-tmc-etf")) {
-		byte_cntr_attach_etf(drvdata->csdev);
 	}
 
 	drvdata->miscdev.name = desc.name;
@@ -1085,7 +1048,7 @@ static void tmc_remove(struct amba_device *adev)
 		return;
 	}
 	if (drvdata->pm_config.pm_enable)
-		list_del(&drvdata->delayed->link);
+		list_del(&drvdata->link);
 	spin_unlock(&delay_lock);
 
 	if (!drvdata->csdev)
