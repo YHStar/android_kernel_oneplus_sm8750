@@ -2090,11 +2090,11 @@ fs/erofs/internal.h
 fs/erofs/namei.c
 fs/erofs/super.c
 fs/erofs/sysfs.c
+fs/erofs/zutil.c
 fs/erofs/xattr.c
 fs/erofs/xattr.h
 fs/erofs/zdata.c
 fs/erofs/zmap.c
-fs/erofs/zutil.c
 fs/eventfd.c
 fs/eventpoll.c
 fs/exec.c
@@ -4491,6 +4491,7 @@ include/trace/hooks/mm.h
 include/trace/hooks/mmc.h
 include/trace/hooks/mpam.h
 include/trace/hooks/net.h
+include/trace/hooks/pm_domain.h
 include/trace/hooks/power.h
 include/trace/hooks/preemptirq.h
 include/trace/hooks/printk.h
